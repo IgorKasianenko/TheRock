@@ -133,6 +133,7 @@ if(THEROCK_ENABLE_COMPILER)
       ${_extra_llvm_cmake_args}
     BUILD_DEPS
       rocm-cmake
+      ${THEROCK_BUNDLED_HWLOC}
     RUNTIME_DEPS
       ${THEROCK_BUNDLED_ZLIB}
       ${THEROCK_BUNDLED_ZSTD}
@@ -156,6 +157,7 @@ if(THEROCK_ENABLE_COMPILER)
   therock_cmake_subproject_provide_package(amd-llvm Clang lib/llvm/lib/cmake/clang)
   therock_cmake_subproject_provide_package(amd-llvm LLD lib/llvm/lib/cmake/lld)
   therock_cmake_subproject_provide_package(amd-llvm LLVM lib/llvm/lib/cmake/llvm)
+  therock_cmake_subproject_provide_package(amd-llvm OpenMP lib/llvm/lib/cmake/openmp)
   therock_cmake_subproject_activate(amd-llvm)
 
 
