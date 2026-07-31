@@ -25,6 +25,9 @@ import logging
 import shlex
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import emulation
+
 THEROCK_BIN_DIR = os.getenv("THEROCK_BIN_DIR")
 SCRIPT_DIR = Path(__file__).resolve().parent
 THEROCK_DIR = SCRIPT_DIR.parent.parent.parent
@@ -38,6 +41,15 @@ VALID_TEST_CATEGORIES = {
     "ffm-standard",
     "ffm-comprehensive",
     "ffm-full",
+    # Emulator-specific categories, selected by the emulated job variants that
+    # fetch_test_configurations.py derives from an `emulate` field. A component
+    # declares one of these in its test_categories.yaml when the tests that
+    # survive a software GPU emulator are not simply one of the tiers above --
+    # see rocrtst, whose emu-standard tier also carries the
+    # ROCRTST_PLATFORM_OVERRIDE the runtime needs. Add the tier here when a
+    # component starts declaring it; an unlisted value falls back to "quick",
+    # which would silently run the wrong tests.
+    "emu-standard",
 }
 # Normalize + validate TEST_TYPE once at module load so all downstream
 # consumers (apply_component_overrides at import time, main() at run
@@ -590,6 +602,56 @@ def build_ctest_command(
     return cmd
 
 
+# Bound on the `ctest -N` listing below. Listing enumerates the test file but
+# runs nothing, so anything beyond this means ctest is wedged -- and because
+# the listing runs before the real suite, a hang here would burn the whole step
+# budget having produced no output at all.
+CTEST_LIST_TIMEOUT_SECONDS = 300
+
+
+def selection_is_empty(cmd: list[str]) -> bool:
+    """True when `cmd`'s label selection matches no tests.
+
+    Re-runs the built command in list mode (-N) rather than reasoning about
+    labels a second time, so this cannot disagree with what ctest is about to
+    do. A failure to list is not treated as "empty" -- let the real run report
+    it.
+    """
+    # Drop -V (noise, and meaningless with -N) and the shard stride. The stride
+    # is a property of *this shard*, not of the label selection: a tail shard
+    # of a suite with fewer entries than shards is legitimately empty, and
+    # reporting that as "the category matches nothing" would be wrong.
+    list_cmd = []
+    skip_next = False
+    for arg in cmd:
+        if skip_next:
+            skip_next = False
+            continue
+        if arg == "-V":
+            continue
+        if arg == "--tests-information":
+            skip_next = True
+            continue
+        list_cmd.append(arg)
+    list_cmd.append("-N")
+    try:
+        result = subprocess.run(
+            list_cmd,
+            cwd=THEROCK_DIR,
+            env=environ_vars,
+            capture_output=True,
+            text=True,
+            timeout=CTEST_LIST_TIMEOUT_SECONDS,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        # Not "empty" -- let the real run surface whatever is wrong.
+        print(f"# Warning: could not list tests ({e}); skipping empty check.")
+        return False
+    if result.returncode != 0:
+        return False
+    return not re.search(r"Test\s+#\d+:", result.stdout)
+
+
 def main():
     # TEST_TYPE was normalized + validated at module load.
     category = TEST_TYPE
@@ -637,6 +699,30 @@ def main():
 
     print(f"# Running: {' '.join(cmd)}")
     print()
+
+    # ctest exits 0 and prints "No tests were found!!!" when the label
+    # selection matches nothing, so an unrunnable selection reports success.
+    # Say so loudly, and for emulated jobs treat it as an error: those exist
+    # only to run the category their matrix entry names, so a missing category
+    # (an artifact built before the component declared it, a typo, a category
+    # with no <name>_<gfx> entry) means the job tested nothing at all.
+    if selection_is_empty(cmd):
+        print(
+            f"WARNING: no tests match category '{category}'"
+            + (f" on {gpu_arch}" if gpu_arch else "")
+            + f" in {TEST_DIR}.",
+            file=sys.stderr,
+        )
+        if emulation.is_emulated():
+            print(
+                "ERROR: this is an emulated job, whose only purpose is to run "
+                f"the '{category}' category. Refusing to report success "
+                "without running anything. Check that the component's "
+                "test_categories.yaml declares that category in the artifacts "
+                "this job fetched.",
+                file=sys.stderr,
+            )
+            return 1
 
     # Execute the command
     try:

@@ -236,7 +236,8 @@ jobs:
       #      Bot-triggered runs (e.g., nightly from rockrel) skip this and use rules below.
       #   2. Multi-GPU components use the multi-GPU runner (required for correct execution)
       #   3. Benchmark components use the dedicated benchmark runner
-      #   4. CPU-only components use standard GitHub runners (aws-linux-scale-rocm-prod)
+      #   4. CPU-only components (including every emulated one) use standard
+      #      GitHub runners (aws-linux-scale-rocm-prod)
       #   5. Per-component runner (set by fetch_test_configurations.py)
       test_runs_on: >-
         ${{

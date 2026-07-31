@@ -20,6 +20,7 @@ Usage:
 
 import argparse
 import platform
+import shlex
 import shutil
 import subprocess
 import sys
@@ -70,13 +71,21 @@ def check_docker() -> bool:
 
 def build_reproduction_command(args: argparse.Namespace) -> str:
     """Build the command string for reproduction."""
+    # shlex.quote, not a hand-written '"{}"': test_script may legitimately
+    # contain shell metacharacters that must survive the copy-paste unexpanded.
+    # An emulated test_script is `$THEROCK_BIN_DIR/mirage run ... --env
+    # TEST_TYPE=$TEST_TYPE ... -- <script>`, and inside double quotes the
+    # *user's* shell would expand every one of those (all unset on their
+    # machine) before this script ever saw them.
     cmd = (
         f"python build_tools/github_actions/reproduce_test_failure.py "
         f"--run-id {args.run_id} "
         f"--repository {args.repository} "
         f"--amdgpu-family {args.amdgpu_family} "
-        f'--test-script "{args.test_script}" '
+        f"--test-script {shlex.quote(args.test_script)} "
     )
+    if args.test_component:
+        cmd += f" --test-component {shlex.quote(args.test_component)}"
     if args.amdgpu_targets:
         cmd += f" --amdgpu-targets {args.amdgpu_targets}"
     if args.shard_index != "1":
@@ -128,6 +137,17 @@ def run_linux(args: argparse.Namespace) -> int:
                     f"export SHARD_INDEX={args.shard_index}",
                     f"export TOTAL_SHARDS={args.total_shards}",
                     f"export TEST_TYPE={args.test_type}",
+                    # Test scripts branch on the family (e.g. per-family gtest
+                    # exclusion lists), and an emulated test_script forwards it
+                    # into the mirage session by name, so it must be set here
+                    # or the reproduction runs a different selection than CI.
+                    f"export AMDGPU_FAMILIES={args.amdgpu_family}",
+                    f"export AMDGPU_TARGETS={args.amdgpu_targets}",
+                    # test_runner.py hard-exits when this is unset, and the
+                    # emulated wrapper forwards it into the mirage session by
+                    # name. Keep in sync with _EMULATION_FORWARDED_ENV in
+                    # fetch_test_configurations.py.
+                    f"export TEST_COMPONENT={args.test_component}",
                 ]
             ),
         ),
@@ -159,6 +179,8 @@ def run_linux(args: argparse.Namespace) -> int:
         "-it",
         "--ipc",
         "host",
+        # Kept unconditional at the reviewer's request on #6436: mapping the
+        # GPU in has no impact on CPU-only and emulated reproductions.
         "--group-add",
         "video",
         "--device",
@@ -294,6 +316,12 @@ def run_windows(args: argparse.Namespace) -> int:
                         f"$env:SHARD_INDEX='{args.shard_index}'",
                         f"$env:TOTAL_SHARDS='{args.total_shards}'",
                         f"$env:TEST_TYPE='{args.test_type}'",
+                        # Keep in sync with the Linux export list in run_linux:
+                        # test scripts branch on the family, and test_runner.py
+                        # hard-exits without TEST_COMPONENT.
+                        f"$env:AMDGPU_FAMILIES='{args.amdgpu_family}'",
+                        f"$env:AMDGPU_TARGETS='{args.amdgpu_targets}'",
+                        f"$env:TEST_COMPONENT='{args.test_component}'",
                     ]
                 ),
             ),
@@ -356,6 +384,12 @@ def main() -> int:
         "per-target kpack-split shards; optional for monolithic runs.",
     )
     parser.add_argument("--test-script", required=True, help="Test script to run")
+    parser.add_argument(
+        "--test-component",
+        default="",
+        help="Component name the test script resolves its test directory from "
+        "(TEST_COMPONENT). Required by test_runner.py-based components.",
+    )
     parser.add_argument("--shard-index", default="1", help="Shard index")
     parser.add_argument("--total-shards", default="1", help="Total shards")
     parser.add_argument("--test-type", default="full", help="Test type")
