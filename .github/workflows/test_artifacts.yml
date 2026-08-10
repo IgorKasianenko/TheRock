@@ -231,16 +231,24 @@ jobs:
       amdgpu_families: ${{ inputs.amdgpu_families }}
       amdgpu_targets: ${{ inputs.amdgpu_targets }}
       # Route to the appropriate runner:
-      #   1. For user-triggered workflow_dispatch, honor test_runs_on input if provided.
+      #   1. CPU-only components (including every emulated one) use standard
+      #      GitHub runners (aws-linux-scale-rocm-prod). This is checked *first*
+      #      on purpose: a CPU-only component has no GPU work to place, and an
+      #      emulated one must not occupy a GPU it cannot use. The rules below
+      #      all select hardware for jobs that need hardware, so none of them
+      #      may drag a CPU-only job onto it -- including the workflow_dispatch
+      #      override, which is an `inputs.` value the matrix cannot opt out of.
+      #   2. For user-triggered workflow_dispatch, honor test_runs_on input if provided.
       #      Only applies to workflow_dispatch events (not PR/workflow_call chains).
+      #      User-triggered means github.actor does NOT contain 'github-actions'.
       #      Bot-triggered runs (e.g., nightly from rockrel) skip this and use rules below.
-      #   2. Multi-GPU components use the multi-GPU runner (required for correct execution)
-      #   3. Benchmark components use the dedicated benchmark runner
-      #   4. CPU-only components (including every emulated one) use standard
-      #      GitHub runners (aws-linux-scale-rocm-prod)
+      #   3. Multi-GPU components use the multi-GPU runner (required for correct execution)
+      #   4. Benchmark components use the dedicated benchmark runner
       #   5. Per-component runner (set by fetch_test_configurations.py)
       test_runs_on: >-
         ${{
+          (matrix.components.linux_cpu_runner == true &&
+            'aws-linux-scale-rocm-prod') ||
           (github.event_name == 'workflow_dispatch' &&
             !contains(github.actor, 'github-actions') &&
             inputs.test_runs_on != '' &&
@@ -250,8 +258,6 @@ jobs:
           (matrix.components.is_benchmark == true &&
             inputs.benchmark_runs_on != '' &&
             inputs.benchmark_runs_on) ||
-          (matrix.components.linux_cpu_runner == true &&
-            'aws-linux-scale-rocm-prod') ||
           matrix.components.test_runner
         }}
       platform: ${{ needs.configure_test_matrix.outputs.platform }}

@@ -1371,6 +1371,14 @@ def run():
                     f"Excluding job {job_name}: multi-GPU required but no multi-GPU runner configured"
                 )
                 continue
+        elif component.get("linux_cpu_runner", False):
+            # CPU-only components (every emulated one, plus hipfile / rocgdb-cpu)
+            # are placed on the CPU cluster by test_artifacts.yml. Don't draw a
+            # GPU runner label for them: it would never be used, it consumes a
+            # draw from the weighted pool that a GPU job should get, and it
+            # leaves a GPU label on the component that debugging tools and the
+            # workflow_dispatch override would otherwise take at face value.
+            logging.info(f"  {job_name}: CPU-only component, no GPU runner assigned")
         else:
             # For ASAN builds, use the sandbox runner if available
             if is_asan_build and test_runs_on_sandbox:

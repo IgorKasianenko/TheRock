@@ -788,11 +788,11 @@ class FetchTestConfigurationsTest(unittest.TestCase):
         # rocjitsu emulates the GPU in software, so no emulated job may be
         # routed to GPU hardware: it would occupy a scarce runner for the whole
         # (10x) emulated timeout and use none of it. This is the invariant the
-        # `linux_cpu_runner` flag exists to express -- but test_artifacts.yml
-        # checks it 4th of 5, behind `multi_gpu_runner`, the workflow_dispatch
-        # `test_runs_on` override, and `is_benchmark`. So the flag alone is not
-        # enough: every key ahead of it in that chain must also be absent,
-        # which is what the assertions below check.
+        # `linux_cpu_runner` flag exists to express. test_artifacts.yml now
+        # checks it *first* of 5, ahead of the workflow_dispatch `test_runs_on`
+        # override, `multi_gpu_runner` and `is_benchmark`, so nothing can drag
+        # an emulated job onto GPU hardware. The keys below are asserted anyway,
+        # as defence in depth against that chain being reordered again.
         for family in ("gfx950-dcgpu", "gfx125X-dcgpu"):
             with self.subTest(family=family):
                 os.environ["AMDGPU_FAMILIES"] = family
@@ -815,6 +815,42 @@ class FetchTestConfigurationsTest(unittest.TestCase):
                     # these are the most CPU-hungry jobs in the matrix and
                     # would otherwise size themselves from the node's cores.
                     self.assertIn("-e KUBE_CPU_REQUEST", job["container_options"])
+
+    def test_cpu_only_jobs_are_not_assigned_a_gpu_runner(self):
+        # A CPU-only job is placed by the `linux_cpu_runner` branch, so drawing
+        # a GPU label for it is never merely redundant: the draw comes from the
+        # family's weighted pool, so it charges a slot against runners that only
+        # GPU jobs can use, and it leaves a plausible-looking GPU label on the
+        # component for anything that reads `test_runner` directly.
+        for family in ("gfx950-dcgpu", "gfx125X-dcgpu"):
+            with self.subTest(family=family):
+                os.environ["AMDGPU_FAMILIES"] = family
+                self.gha_output.clear()
+                fetch_test_configurations.run()
+                components = self._get_components()
+
+                cpu_only = [c for c in components if c.get("linux_cpu_runner")]
+                self.assertGreater(len(cpu_only), 0)
+                for job in cpu_only:
+                    self.assertNotIn("test_runner", job, job["job_name"])
+
+                if family != "gfx950-dcgpu":
+                    # gfx125X has `test-runs-on: ""`, so *nothing* in that family
+                    # draws a runner and the control below would pass vacuously.
+                    continue
+
+                # The GPU jobs in the same matrix still get one, so this is not
+                # passing by way of runner selection being skipped wholesale.
+                # Multi-GPU jobs are placed by `multi_gpu_runner` instead and
+                # never carry `test_runner`, so they are not part of the claim.
+                gpu_jobs = [
+                    c
+                    for c in components
+                    if not c.get("linux_cpu_runner") and "multi_gpu_runner" not in c
+                ]
+                self.assertGreater(len(gpu_jobs), 0)
+                for job in gpu_jobs:
+                    self.assertIn("test_runner", job, job["job_name"])
 
     def test_no_emulated_variant_for_unemulated_family(self):
         os.environ["AMDGPU_FAMILIES"] = "gfx1151"
