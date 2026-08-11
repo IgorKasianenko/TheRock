@@ -249,19 +249,22 @@ of tests than the hardware one — the scaled timeout is headroom, not a licence
 to run the full suite.
 
 **That set belongs to the component, in its `test_categories.yaml`.** TheRock
-only names the category:
+only names the category, and the name to use is the existing ROCm-wide
+simulator tier — `ffm-quick`, which rocwmma, rocthrust, hipcub, rocprim and
+rocfft already declare:
 
 ```
-"emulate_test_type": "emu-standard",
+"emulate_test_type": "ffm-quick",
 ```
 
 This is a **pin, not a default**: which categories an emulator can get through
 is a property of the emulator, so a nightly run asking for `comprehensive` must
 not drag the emulated variant along with it. Components that leave it unset
-follow the run's `TEST_TYPE`. Add any new category name to
+follow the run's `TEST_TYPE`. Prefer one of the `ffm-*` tiers already in
 `VALID_TEST_CATEGORIES` in
-[`test_runner.py`](../../build_tools/github_actions/test_executable_scripts/test_runner.py)
-— an unlisted value silently falls back to `quick`.
+[`test_runner.py`](../../build_tools/github_actions/test_executable_scripts/test_runner.py);
+if a genuinely new name is unavoidable it has to be added there too, since an
+unlisted value silently falls back to `quick`.
 
 ### Declaring an emulation category (component side)
 
@@ -269,7 +272,7 @@ rocrtst's `test_categories.yaml` in `rocm-systems` is the worked example. An
 emulation category is an ordinary category plus `env_variables`:
 
 ```yaml
-  emu-standard:
+  ffm-quick:
     description: "Emulated GPU (rocjitsu, driven by mirage) - hardware-free CI"
     test_patterns:
       - "rocrtst.Test_Example"
@@ -279,7 +282,7 @@ emulation category is an ordinary category plus `env_variables`:
     env_variables:
       - "ROCRTST_PLATFORM_OVERRIDE=EMULATOR"
     labels:
-      - "emu-standard"
+      - "ffm-quick"
       - "emulation"
 ```
 
@@ -303,7 +306,7 @@ Two things to remember when adding one:
 ### Skipping tests an emulator cannot run
 
 Prefer letting the component decide, and say it in `test_categories.yaml`.
-rocrtst's `emu-standard` tier is `standard` minus the three tests that fail
+rocrtst's `ffm-quick` tier is `standard` minus the three tests that fail
 under rocjitsu (unimplemented dmabuf interop, an SVM attribute query, and FP
 exception delivery), and its `ROCRTST_PLATFORM_OVERRIDE=EMULATOR` makes rocrtst
 skip the ~50 further entries under `platforms.EMULATOR.blocked_tests` in

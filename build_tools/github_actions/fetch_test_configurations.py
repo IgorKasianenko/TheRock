@@ -1052,12 +1052,14 @@ test_matrix = {
         # is exactly the surface rocjitsu emulates, so it is the cheapest
         # meaningful hardware-free check of a new target.
         "emulate": "rocjitsu",
-        # rocrtst declares its own emulation tier in test_categories.yaml:
+        # `ffm-quick` is the ROCm-wide tier for "the tests that survive a
+        # simulated GPU" -- rocwmma, rocthrust, hipcub, rocprim and rocfft
+        # already declare it. rocrtst declares its own in test_categories.yaml:
         # the test list that survives rocjitsu, and the
         # ROCRTST_PLATFORM_OVERRIDE=EMULATOR the runtime needs to know it is
         # emulated at all. Everything about *what* runs under the emulator
         # therefore lives with the component; this line only names the tier.
-        "emulate_test_type": "emu-standard",
+        "emulate_test_type": "ffm-quick",
     },
     # Emulation smoke test: runs `rocminfo` under mirage/rocjitsu. This is the
     # cheapest end-to-end check that the mirage CLI, the rocjitsu emulator, the

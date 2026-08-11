@@ -36,20 +36,14 @@ VALID_TEST_CATEGORIES = {
     "standard",
     "comprehensive",
     "full",
-    # ffm-specific categories
+    # ffm-specific categories. These are the ROCm-wide tiers for running against
+    # a simulated/emulated GPU (rocwmma, rocthrust, hipcub, rocprim, rocfft and
+    # others already declare them), and they are what the emulated job variants
+    # derived from an `emulate` field select -- see `emulate_test_type`.
     "ffm-quick",
     "ffm-standard",
     "ffm-comprehensive",
     "ffm-full",
-    # Emulator-specific categories, selected by the emulated job variants that
-    # fetch_test_configurations.py derives from an `emulate` field. A component
-    # declares one of these in its test_categories.yaml when the tests that
-    # survive a software GPU emulator are not simply one of the tiers above --
-    # see rocrtst, whose emu-standard tier also carries the
-    # ROCRTST_PLATFORM_OVERRIDE the runtime needs. Add the tier here when a
-    # component starts declaring it; an unlisted value falls back to "quick",
-    # which would silently run the wrong tests.
-    "emu-standard",
 }
 # Normalize + validate TEST_TYPE once at module load so all downstream
 # consumers (apply_component_overrides at import time, main() at run
