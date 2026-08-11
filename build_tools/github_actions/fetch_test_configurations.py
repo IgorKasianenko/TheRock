@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import platform as platform_module
+import re
 import sys
 from copy import deepcopy
 from pathlib import Path
@@ -137,7 +138,12 @@ _EMULATION_FETCH_ARTIFACT_ARGS = ("--mirage", "--rocjitsu")
 
 # Matrix keys that configure emulation. These are consumed by
 # _build_emulated_job() and never appear in the emitted matrix entries.
-_EMULATION_MATRIX_KEYS = ("emulate", "emulate_only", "emulate_test_type")
+_EMULATION_MATRIX_KEYS = (
+    "emulate",
+    "emulate_only",
+    "emulate_test_type",
+    "emulate_env",
+)
 
 # Environment the emulated test script needs, forwarded across the session
 # boundary by name.
@@ -174,8 +180,19 @@ _EMULATION_FORWARDED_ENV = (
     "ROCM_KPACK_DEBUG",
 )
 
+# What an `emulate_env` NAME=VALUE pair may contain. Deliberately narrow: the
+# wrapped command is passed through two layers of shell quoting (see
+# _wrap_in_mirage_run), so anything outside this set is a latent quoting bug
+# rather than a feature worth supporting.
+_MIRAGE_ENV_LITERAL_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_.:/,+-]+")
 
-def _wrap_in_mirage_run(test_script: str, emulator: str, profile: str) -> str:
+
+def _wrap_in_mirage_run(
+    test_script: str,
+    emulator: str,
+    profile: str,
+    emulate_env: dict[str, str] | None = None,
+) -> str:
     """Wrap `test_script` so the whole thing runs inside a mirage session.
 
     The emulator and profile are baked in as literals rather than read from the
@@ -183,10 +200,10 @@ def _wrap_in_mirage_run(test_script: str, emulator: str, profile: str) -> str:
     the failure-reproduction output and the component repositories' copies of
     test_component.yml rely on.
 
-    Anything the tests themselves need in their environment is not set here --
-    it belongs in the component's test_categories.yaml, which compiles it into
-    the CTest entry's ENVIRONMENT property (rocrtst does this for
-    ROCRTST_PLATFORM_OVERRIDE).
+    `emulate_env` is environment the component's *tests* need in order to pass
+    under an emulator (see the field's comment on rocrtst). It is set for the
+    whole mirage session rather than for the test binary alone, which is the
+    price of keeping the change inside TheRock.
 
     The result deliberately contains no quote characters. test_component.yml
     passes test_script to the reproduction helper inside single quotes (so
@@ -207,6 +224,19 @@ def _wrap_in_mirage_run(test_script: str, emulator: str, profile: str) -> str:
         f"--env TEST_EMULATOR={emulator}",
         f"--env TEST_EMULATOR_PROFILE={profile}",
     ]
+    # Sorted so the emitted command is stable across runs; a matrix entry that
+    # reshuffles on every configure would churn the reproduction instructions
+    # and any diff taken against them.
+    for name, value in sorted((emulate_env or {}).items()):
+        # Same quote-free contract as the rest of this command, enforced rather
+        # than documented: a value needing quoting or word-splitting would be
+        # silently truncated at the first space by the time it reached mirage.
+        if not _MIRAGE_ENV_LITERAL_RE.fullmatch(f"{name}={value}"):
+            raise ValueError(
+                f"emulate_env entry {name}={value!r} is not a quote-free, "
+                "space-free literal; mirage receives this as a bare shell word"
+            )
+        parts.append(f"--env {name}={value}")
     # `${NAME:+--env NAME=$NAME}`, not a bare `--env NAME=$NAME`: the latter
     # emits `--env NAME=` for anything the workflow left unset, and mirage
     # inserts that as an empty *set* value rather than leaving it unset.
@@ -300,7 +330,10 @@ def _build_emulated_job(job_config: dict, emulator: str, profile: str) -> dict:
     if emulate_test_type:
         emulated["test_type"] = emulate_test_type
     emulated["test_script"] = _wrap_in_mirage_run(
-        job_config["test_script"], emulator, profile
+        job_config["test_script"],
+        emulator,
+        profile,
+        job_config.get("emulate_env"),
     )
     # A CPU runner has no GPUs at all, let alone several, so drop every key
     # that test_artifacts.yml's `test_runs_on` chain checks *ahead of*
@@ -1052,14 +1085,32 @@ test_matrix = {
         # is exactly the surface rocjitsu emulates, so it is the cheapest
         # meaningful hardware-free check of a new target.
         "emulate": "rocjitsu",
-        # `ffm-quick` is the ROCm-wide tier for "the tests that survive a
-        # simulated GPU" -- rocwmma, rocthrust, hipcub, rocprim and rocfft
-        # already declare it. rocrtst declares its own in test_categories.yaml:
-        # the test list that survives rocjitsu, and the
-        # ROCRTST_PLATFORM_OVERRIDE=EMULATOR the runtime needs to know it is
-        # emulated at all. Everything about *what* runs under the emulator
-        # therefore lives with the component; this line only names the tier.
-        "emulate_test_type": "ffm-quick",
+        # `quick` is a category rocrtst already declares, so nothing has to land
+        # in rocm-systems for this job to work. Measured under rocjitsu on the
+        # mi350x profile: 19 selected, 6 skipped by the EMULATOR platform
+        # filter, 13 run, all passing, 9.6 s. (`standard` runs 65 in ~10 min but
+        # three of them fail on emulator gaps, so it needs a rocrtst-side
+        # exclusion list before it can be pinned here.)
+        #
+        # A pin, not a default: which categories an emulator can get through is
+        # a property of the emulator, so a nightly asking for `comprehensive`
+        # must not drag this job along with it.
+        "emulate_test_type": "quick",
+        # Without this, rocrtst believes it is on real hardware -- it detects
+        # emulators from /sys/module/amdgpu/parameters/emu_mode, which rocjitsu
+        # does not provide -- and skips none of the ~50 entries under
+        # platforms.EMULATOR.blocked_tests in share/rocrtst/platform_config.yaml
+        # that it already ships. Two of those, IPC and
+        # Deallocation_Notifier_Test, are in `quick` and fail outright under
+        # rocjitsu; IPC also leaves a child spinning at 100% CPU after the suite
+        # has reported. Measured both ways: with the override 13/13 pass, without
+        # it 14 pass and 2 fail.
+        #
+        # This belongs in rocrtst's own test_categories.yaml, which compiles
+        # `env_variables` into the CTest entry's ENVIRONMENT property and would
+        # scope it to the test binary and reproduce outside CI. Keeping it here
+        # is the cost of not requiring a rocm-systems change to land first.
+        "emulate_env": {"ROCRTST_PLATFORM_OVERRIDE": "EMULATOR"},
     },
     # Emulation smoke test: runs `rocminfo` under mirage/rocjitsu. This is the
     # cheapest end-to-end check that the mirage CLI, the rocjitsu emulator, the

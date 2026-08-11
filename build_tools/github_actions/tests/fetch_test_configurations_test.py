@@ -910,12 +910,17 @@ class FetchTestConfigurationsTest(unittest.TestCase):
         self.assertEqual(self._get_components(), [])
 
     def test_emulation_keys_never_reach_the_matrix(self):
-        # These three keys configure the generator; leaking them into the
-        # emitted JSON would make workflow expressions like `component.emulate`
+        # These keys configure the generator; leaking them into the emitted
+        # JSON would make workflow expressions like `component.emulate`
         # silently truthy on hardware. Spelled out rather than read from
         # _EMULATION_MATRIX_KEYS: production strips keys by iterating that same
         # constant, so sharing it would make this test pass for any value of it.
-        emulation_keys = ("emulate", "emulate_only", "emulate_test_type")
+        emulation_keys = (
+            "emulate",
+            "emulate_only",
+            "emulate_test_type",
+            "emulate_env",
+        )
         self.assertCountEqual(
             emulation_keys,
             fetch_test_configurations._EMULATION_MATRIX_KEYS,
@@ -1096,6 +1101,53 @@ class FetchTestConfigurationsTest(unittest.TestCase):
             self._one_emulated(self._get_components())["test_type"], "quick"
         )
 
+    def test_emulate_env_reaches_the_mirage_session(self):
+        # rocrtst only passes under rocjitsu once it knows it is emulated, and
+        # with no rocrtst-side change to carry that, the wrapper has to.
+        os.environ["AMDGPU_FAMILIES"] = "gfx950-dcgpu"
+        os.environ["PROJECTS_TO_TEST"] = "rocrtst"
+
+        fetch_test_configurations.run()
+        prefix = self._one_emulated(self._get_components())["test_script"].split(
+            " -- "
+        )[0]
+
+        declared = fetch_test_configurations.test_matrix["rocrtst"]["emulate_env"]
+        for name, value in declared.items():
+            self.assertIn(f"--env {name}={value}", prefix)
+        # A literal, not a `${NAME:+...}` forward: the value comes from the
+        # matrix, not from whatever the workflow happened to export, so it must
+        # reproduce outside CI too.
+        self.assertNotIn("${ROCRTST_PLATFORM_OVERRIDE", prefix)
+
+    def test_emulate_env_is_ordered_and_quote_free(self):
+        # The wrapped command crosses two layers of shell quoting (see
+        # _wrap_in_mirage_run), so a value needing either would be truncated at
+        # the first space. Reject it at configure time rather than debugging a
+        # half-set variable on a CPU runner. Ordering is asserted because an
+        # entry that reshuffles per run churns the reproduction instructions.
+        wrap = fetch_test_configurations._wrap_in_mirage_run
+        script = wrap("run.py", "rocjitsu", "mi350x", {"B_VAR": "2", "A_VAR": "1"})
+        self.assertLess(script.index("--env A_VAR=1"), script.index("--env B_VAR=2"))
+
+        for bad in ({"A": "with space"}, {"A": 'quo"ted'}, {"A": "semi;colon"}):
+            with self.subTest(value=bad):
+                with self.assertRaises(ValueError):
+                    wrap("run.py", "rocjitsu", "mi350x", bad)
+
+    def test_emulate_env_declarations_are_accepted_by_the_wrapper(self):
+        # Every emulate_env in the matrix must survive the validation above --
+        # otherwise the component's own configure run is the thing that fails.
+        for key, config in fetch_test_configurations.test_matrix.items():
+            if "emulate_env" in config:
+                with self.subTest(component=key):
+                    fetch_test_configurations._wrap_in_mirage_run(
+                        config["test_script"],
+                        config["emulate"],
+                        "mi350x",
+                        config["emulate_env"],
+                    )
+
     def test_emulated_timeout_is_capped(self):
         # The 10x multiplier is a blunt default; without a ceiling a component
         # with a generous hardware budget would let a wedged emulator sit on a
@@ -1133,23 +1185,33 @@ class FetchTestConfigurationsTest(unittest.TestCase):
         )
 
     def test_no_test_environment_is_baked_into_the_wrapper(self):
-        # Environment the *tests* need belongs in the component's
-        # test_categories.yaml, which compiles it into the CTest entry's
-        # ENVIRONMENT property. Setting it here instead would apply it to the
-        # whole mirage session -- including the runner process -- and would
-        # silently diverge from what a developer running ctest by hand gets.
-        # The wrapper may only carry the emulator identity and the CI variables
-        # the runner itself reads.
+        # The wrapper may only carry the emulator identity, the CI variables the
+        # runner itself reads, and whatever the component declared in
+        # `emulate_env` -- nothing implicit. Environment the *tests* need is
+        # better off in the component's own test_categories.yaml, which compiles
+        # it into the CTest entry's ENVIRONMENT property: scoped to the test
+        # binary rather than the whole mirage session, and reproducing for
+        # someone running ctest by hand. `emulate_env` is the escape hatch for
+        # when the component cannot be changed, so it has to be declared per
+        # component here rather than accumulating in the wrapper.
         os.environ["AMDGPU_FAMILIES"] = "gfx950-dcgpu"
 
         fetch_test_configurations.run()
 
-        allowed = {"TEST_EMULATOR", "TEST_EMULATOR_PROFILE"}
-        allowed.update(fetch_test_configurations._EMULATION_FORWARDED_ENV)
+        base = {"TEST_EMULATOR", "TEST_EMULATOR_PROFILE"}
+        base.update(fetch_test_configurations._EMULATION_FORWARDED_ENV)
+        # The emulated job name is "<job_name> (emulated <profile>)", which is
+        # the only link back to the matrix entry that declared the env.
+        declared_by_job_name = {
+            config["job_name"]: set(config.get("emulate_env", {}))
+            for config in fetch_test_configurations.test_matrix.values()
+        }
         for job in self._emulated(self._get_components()):
             prefix = job["test_script"].split(" -- ")[0]
             names = re.findall(r"--env ([A-Z][A-Z0-9_]*)=", prefix)
             self.assertTrue(names)
+            component = job["job_name"].split(" (emulated ")[0]
+            allowed = base | declared_by_job_name.get(component, set())
             self.assertEqual(
                 sorted(set(names) - allowed), [], f"{job['job_name']} wrapper"
             )

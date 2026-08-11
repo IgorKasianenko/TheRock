@@ -182,7 +182,7 @@ class EmptySelectionGuardTest(unittest.TestCase):
         self.assertTrue(empty)
 
     def test_matching_tests_is_not_empty(self):
-        empty, _ = self._selection_is_empty("  Test #7: rocrtst64_ffm-quick_suite\n")
+        empty, _ = self._selection_is_empty("  Test #7: rocrtst64_quick_suite\n")
         self.assertFalse(empty)
 
     def test_listing_failure_is_not_reported_as_empty(self):

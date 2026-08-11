@@ -69,6 +69,7 @@ In [`fetch_test_configurations.py`](../../build_tools/github_actions/fetch_test_
 | emulate             | string | Linux    | Emulator backend to also run this component under, e.g. `"rocjitsu"`. See [Emulated tests](#emulated-tests-mirage--rocjitsu)       |
 | emulate_only        | bool   | Linux    | Only run the emulated variant; do not run this component on hardware                                                               |
 | emulate_test_type   | string | Linux    | Test category the emulated variant is pinned to, regardless of the run's `TEST_TYPE`                                               |
+| emulate_env         | dict   | Linux    | Environment to set for the mirage session, for tests that must know they are emulated                                              |
 
 > [!NOTE]
 > When adding a new component to TheRock (typically a new .toml file), you may need to update `install_rocm_from_artifacts.py` to allow CI workflows and users to selectively install it.<br>
@@ -248,72 +249,60 @@ everything, so an emulated variant is expected to run a different, cheaper set
 of tests than the hardware one — the scaled timeout is headroom, not a licence
 to run the full suite.
 
-**That set belongs to the component, in its `test_categories.yaml`.** TheRock
-only names the category, and the name to use is the existing ROCm-wide
-simulator tier — `ffm-quick`, which rocwmma, rocthrust, hipcub, rocprim and
-rocfft already declare:
+**Pick a category the component already declares.** TheRock only names it:
 
 ```
-"emulate_test_type": "ffm-quick",
+"emulate_test_type": "quick",
 ```
 
 This is a **pin, not a default**: which categories an emulator can get through
 is a property of the emulator, so a nightly run asking for `comprehensive` must
 not drag the emulated variant along with it. Components that leave it unset
-follow the run's `TEST_TYPE`. Prefer one of the `ffm-*` tiers already in
-`VALID_TEST_CATEGORIES` in
-[`test_runner.py`](../../build_tools/github_actions/test_executable_scripts/test_runner.py);
-if a genuinely new name is unavoidable it has to be added there too, since an
-unlisted value silently falls back to `quick`.
+follow the run's `TEST_TYPE`. The value has to be in `VALID_TEST_CATEGORIES` in
+[`test_runner.py`](../../build_tools/github_actions/test_executable_scripts/test_runner.py)
+— an unlisted value silently falls back to `quick`.
 
-### Declaring an emulation category (component side)
+Prefer an existing category over a new one, even a coarse fit. rocrtst is
+pinned to `quick`: 13 tests in 9.6 s under rocjitsu. Its `standard` covers 65
+tests in ~10 min, which the emulated budget could afford, but three of them
+fail on emulator gaps — so using it would first require a rocrtst-side
+exclusion list. If a component does add a tier for this, the ROCm-wide
+convention is the `ffm-*` family (`ffm-quick` and friends, already declared by
+rocwmma, rocthrust, hipcub, rocprim, rocfft and hipdnn), not a bespoke name.
 
-rocrtst's `test_categories.yaml` in `rocm-systems` is the worked example. An
-emulation category is an ordinary category plus `env_variables`:
+### Environment the emulated tests need
 
-```yaml
-  ffm-quick:
-    description: "Emulated GPU (rocjitsu, driven by mirage) - hardware-free CI"
-    test_patterns:
-      - "rocrtst.Test_Example"
-      # ... the tests that survive the emulator
-    exclude:
-      - "rocrtstFunc.Memory_Max_Mem"
-    env_variables:
-      - "ROCRTST_PLATFORM_OVERRIDE=EMULATOR"
-    labels:
-      - "ffm-quick"
-      - "emulation"
+Some tests only pass under an emulator once they know they are emulated.
+`emulate_env` sets environment for the mirage session:
+
+```
+"emulate_env": {"ROCRTST_PLATFORM_OVERRIDE": "EMULATOR"},
 ```
 
-`parse_test_categories.py` compiles `env_variables` into the CTest entry's
-`ENVIRONMENT` property, so it reaches the test binary for anyone running
-`ctest`, not just CI. That is why emulator environment belongs here rather than
-in the mirage wrapper: the wrapper would apply it to the whole session
-(including the runner process) and would not reproduce outside CI.
+rocrtst is the live case. It detects emulators from
+`/sys/module/amdgpu/parameters/emu_mode`, which rocjitsu does not provide, so
+without the override it believes it is on real hardware and skips none of the
+~50 entries under `platforms.EMULATOR.blocked_tests` in the
+`share/rocrtst/platform_config.yaml` it already ships. Two of those are in
+`quick` and fail outright (`IPC`, which also leaves a child spinning at 100% CPU
+after the suite reports, and `Deallocation_Notifier_Test`).
 
-Two things to remember when adding one:
+Values are validated as quote-free, space-free literals, because the wrapped
+command passes through two layers of shell quoting before mirage sees it.
 
-- Give the category its own `execution_settings.category_timeouts` entry. CTest
-  bakes `TIMEOUT` into the installed `CTestTestfile.cmake` and `ctest --timeout`
-  does **not** raise it, so a category whose emulated run exceeds its own budget
-  fails regardless of what the job timeout says.
-- Add the category name to every applicable `exclude_gpu_*` `labels` list. A
-  category missing from one gets no `<category>_<gfx>` entry, and
-  `test_runner.py` — which selects `-L ^<category>$ -L ^ex_gpu_<arch>$` whenever
-  the component has any GPU-specific entries — would then match no tests at all.
+> [!NOTE]
+> This is the second-best home for such a variable. A component on the
+> standardized flow can put it in its own `test_categories.yaml` under
+> `env_variables`, which `parse_test_categories.py` compiles into the CTest
+> entry's `ENVIRONMENT` property — scoped to the test binary rather than the
+> whole mirage session, and reproducing for anyone running `ctest` by hand
+> rather than only in CI. Prefer that when you are able to change the component;
+> `emulate_env` is for when you are not.
 
 ### Skipping tests an emulator cannot run
 
-Prefer letting the component decide, and say it in `test_categories.yaml`.
-rocrtst's `ffm-quick` tier is `standard` minus the three tests that fail
-under rocjitsu (unimplemented dmabuf interop, an SVM attribute query, and FP
-exception delivery), and its `ROCRTST_PLATFORM_OVERRIDE=EMULATOR` makes rocrtst
-skip the ~50 further entries under `platforms.EMULATOR.blocked_tests` in
-`share/rocrtst/platform_config.yaml` and shrink its allocation sizes and
-iteration counts.
-
-Keeping that list with the component means one place to update when the
-emulator grows a capability, and it keeps `fetch_test_configurations.py` from
-re-growing the per-component test filters that the move to `test_runner.py`
-exists to retire.
+Prefer letting the component decide, in its `test_categories.yaml`, and keep
+`fetch_test_configurations.py` out of it — per-component test filters there are
+exactly what the move to `test_runner.py` exists to retire. Between the platform
+filter above and the choice of category, a component usually has enough to
+express "what survives the emulator" without TheRock naming a single test.

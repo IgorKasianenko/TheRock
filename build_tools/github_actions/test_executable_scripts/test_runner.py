@@ -36,10 +36,7 @@ VALID_TEST_CATEGORIES = {
     "standard",
     "comprehensive",
     "full",
-    # ffm-specific categories. These are the ROCm-wide tiers for running against
-    # a simulated/emulated GPU (rocwmma, rocthrust, hipcub, rocprim, rocfft and
-    # others already declare them), and they are what the emulated job variants
-    # derived from an `emulate` field select -- see `emulate_test_type`.
+    # ffm-specific categories
     "ffm-quick",
     "ffm-standard",
     "ffm-comprehensive",
