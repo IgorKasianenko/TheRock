@@ -137,7 +137,7 @@ component whose family has no multi-GPU pool still gets its emulated variant.
 > `test_runs_on` chain: `multi_gpu_runner` → the `workflow_dispatch`
 > `test_runs_on` override → `is_benchmark` → `linux_cpu_runner` → the
 > per-component runner. So the emulated variant must drop *every* key checked
-> ahead of it — `_build_emulated_job` pops `multi_gpu`, `multi_gpu_runner`, and
+> ahead of it — `build_emulated_job` pops `multi_gpu`, `multi_gpu_runner`, and
 > `is_benchmark`. Anything added ahead of `linux_cpu_runner` in that chain must
 > be popped there too. A `workflow_dispatch` run that sets `test_runs_on`
 > explicitly still overrides this, as it does for every other CPU-only
@@ -164,10 +164,11 @@ component whose family has no multi-GPU pool still gets its emulated variant.
 
 ### Which families are emulated
 
-`_MIRAGE_PROFILE_BY_FAMILY_PREFIX` maps an AMDGPU family to one of mirage's
+In [`emulation.py`](../../build_tools/github_actions/emulation.py),
+`MIRAGE_PROFILE_BY_FAMILY_PREFIX` maps an AMDGPU family to one of mirage's
 builtin profiles (see
 [`profiles.rs`](https://github.com/ROCm/rocm-systems/blob/develop/emulation/mirage/builtin/src/profiles.rs)),
-and `_EMULATED_PROFILES` selects which of those CI actually schedules jobs for:
+and `EMULATED_PROFILES` selects which of those CI actually schedules jobs for:
 
 | Family          | mirage profile | Emulated GPU     | Scheduled in CI                      |
 | --------------- | -------------- | ---------------- | ------------------------------------ |
@@ -198,9 +199,8 @@ Everything the script does — compiling, launching test binaries, spawning ctes
 or pytest — happens inside that one session, and the script never invokes mirage
 itself. *Which* tests run is decided by the matrix entry's `emulate_test_type`,
 not by the script; `emulation.is_emulated()` exists for the few scripts that
-have to behave differently under an emulator (`test_emulation_smoke.py` refuses
-to run outside one, and `test_runner.py` uses it to turn an empty ctest
-selection into a hard failure).
+have to behave differently under an emulator (`test_emulation.py` refuses to run
+outside one).
 
 > [!NOTE]
 > `mirage host` starts the workload with `env_clear()`, re-inheriting only
@@ -211,14 +211,9 @@ selection into a hard failure).
 > the `--env` list is for. Each is emitted as `${NAME:+--env NAME=$NAME}` so a
 > variable the workflow left unset stays unset inside the session rather than
 > becoming an empty string. A script that starts reading a new CI variable must
-> add it to `_EMULATION_FORWARDED_ENV` in `fetch_test_configurations.py`, or it
-> will be unset under emulation.
-> `test_forwarded_env_covers_what_the_scripts_read` reads the emulated entry
-> points and fails when one of them reads a variable that is neither forwarded
-> nor listed as deliberately local. It only sees direct `os.getenv` /
-> `os.environ` reads in those entry points — env consumed by a helper module,
-> or by a binary ctest launches (the sanitizer variables, for instance), is not
-> covered.
+> add it to `FORWARDED_ENV` in
+> [`emulation.py`](../../build_tools/github_actions/emulation.py), or it will be
+> unset under emulation.
 
 Anything an emulated script can derive, it should derive rather than expect to
 be forwarded — `test_runner.py` derives `ROCM_PATH` from `THEROCK_BIN_DIR` for
@@ -226,7 +221,7 @@ exactly this reason, which guarantees it points at the artifacts this job
 actually fetched.
 
 Scripts that need to behave differently under an emulator can ask, using
-[`emulation.py`](../../build_tools/github_actions/test_executable_scripts/emulation.py):
+[`emulation.py`](../../build_tools/github_actions/emulation.py):
 
 ```python
 import emulation
@@ -237,10 +232,10 @@ if emulation.is_emulated():
 
 The two emulated components today are:
 
-| Component         | Script                    | What it does                                                            |
-| ----------------- | ------------------------- | ----------------------------------------------------------------------- |
-| `emulation-smoke` | `test_emulation_smoke.py` | Runs `rocminfo` under mirage and checks the emulated agent's identity   |
-| `rocrtst`         | `test_runner.py`          | Runs a rocrtst `test_categories.yaml` category against the emulated GPU |
+| Component   | Script              | What it does                                                            |
+| ----------- | ------------------- | ----------------------------------------------------------------------- |
+| `emulation` | `test_emulation.py` | Checks that the emulated GPU comes up and reports the expected target   |
+| `rocrtst`   | `test_runner.py`    | Runs a rocrtst `test_categories.yaml` category against the emulated GPU |
 
 ### Choosing what an emulated job runs
 
